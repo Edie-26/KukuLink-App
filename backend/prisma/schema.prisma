@@ -11,12 +11,14 @@ model User {
   id        Int     @id @default(autoincrement())
   name      String
   email     String  @unique
-  password  String  // bcrypt hashed
-  role      String  @default("buyer") // "buyer" or "supplier"
+  password  String
+  role      String  @default("buyer")
   products  Product[] // products they supply (if supplier)
+  orders    Order[]   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
 
 model Product {
   id          Int     @id @default(autoincrement())
@@ -26,4 +28,17 @@ model Product {
   supplier    User    @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model Order {
+  id        String   @id @default(uuid())
+  chickName String
+  quantity  Int
+  price     Int
+  status    String   @default("Pending")
+
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
 }
