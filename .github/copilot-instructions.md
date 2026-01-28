@@ -1,29 +1,29 @@
 # KukuLink Codebase Instructions for AI Agents
 
 ## Project Overview
-**KukuLink** is a full-stack mobile app for managing and trading poultry (chicks) in agricultural markets. It uses:
-- **Backend**: Express.js + Prisma ORM + PostgreSQL
-- **Frontend**: React Native (Expo) with TypeScript + Expo Router
+**KukuLink** is a full-stack mobile app for ordering and managing poultry (chicks) in Uganda, connecting buyers with suppliers. It uses:
+- **Backend**: Express.js + Prisma ORM + PostgreSQL (Node.js on port 5000)
+- **Frontend**: React Native (Expo) with TypeScript + Expo Router (file-based routing)
 - **Domain**: Agricultural marketplace focused on poultry products
-- **Status**: Authentication system fully implemented with password hashing and JWT tokens
+- **Status**: Core authentication system complete; ongoing development on product ordering, cart, and payment integration
 
 ## Architecture & Data Flow
 
 ### Backend Architecture
 - **Port**: 5000 (configured in [backend/index.js](backend/index.js))
-- **Entry point**: [backend/index.js](backend/index.js) - Express server with CORS enabled
-- **Database**: PostgreSQL via Prisma (connection: `postgresql://postgres:1998@localhost:5432/kukulink`)
-- **Authentication**: JWT tokens signed with bcrypt-hashed passwords
-- **Key models**: `User` (with email unique constraint), `Product` (with supplier relationship)
+- **Entry point**: [backend/index.js](backend/index.js) - Express server with CORS + JSON middleware
+- **Database**: PostgreSQL via Prisma ORM (connection: `postgresql://postgres:1998@localhost:5432/kukulink`)
+- **Authentication**: JWT tokens (7-day expiry) signed with `JWT_SECRET` from .env; passwords bcrypt-hashed (10 salt rounds)
+- **Key models**: `User` (email unique), `Product` (price in cents, supplier foreign key), `Order` (user-placed orders)
 
-**Backend Endpoints**:
-| Endpoint | Method | Auth Required | Purpose |
-|----------|--------|---|---------|
-| `/` | GET | No | Health check |
-| `/api/auth/signup` | POST | No | Create account with hashed password |
-| `/api/auth/login` | POST | No | Login, returns JWT token |
-| `/api/chicks` | GET | Yes (Bearer token) | Get all products |
-| `/api/seed` | GET | No | One-time database seeding |
+**Backend Endpoints** (all return JSON):
+| Endpoint | Method | Auth | Purpose | Request Body |
+|----------|--------|------|---------|---------------|
+| `/` | GET | No | Health check | - |
+| `/api/auth/signup` | POST | No | Create account | `{name, email, password, role}` |
+| `/api/auth/login` | POST | No | Login, returns JWT token | `{email, password}` |
+| `/api/chicks` | GET | Yes | Get all products with supplier | - |
+| `/api/seed` | GET | No | Populate default products + supplier | - |
 
 **Auth Flow**:
 1. User signs up → bcrypt hashes password (10 salt rounds) → stores in DB
@@ -38,9 +38,10 @@ model User {
   id        Int       @id @default(autoincrement())
   name      String
   email     String    @unique
-  password  String    // bcrypt hashed
+  password  String    // bcrypt hashed (never returned in API responses)
   role      String    @default("buyer") // "buyer" or "supplier"
-  products  Product[]
+  products  Product[] // products they supply
+  orders    Order[]   // orders they placed
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
@@ -48,39 +49,49 @@ model User {
 model Product {
   id          Int      @id @default(autoincrement())
   name        String
-  price       Int      // in cents
+  price       Int      // in cents (e.g., 3000 = 30 UGX)
   supplierId  Int
   supplier    User     @relation(fields: [supplierId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+model Order {
+  id        String   @id @default(uuid())
+  chickName String   // product name
+  quantity  Int
+  price     Int      // total price
+  status    String   @default("Pending") // Order status
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
 ```
 
 ### Frontend Architecture
-- **Routing**: File-based routing via Expo Router in [frontend/app/](frontend/app/)
-- **Auth Flow**: Root layout renders conditionally based on `useAuth()` login state
-- **Persistence**: JWT token and user data stored in AsyncStorage across app restarts
+- **Routing**: File-based routing via Expo Router in frontend/app/ (see directory for structure)
+- **Auth Flow**: Root layout conditionally renders (auth), (tabs), or (supplier-tabs) based on authentication state
+- **Persistence**: JWT token stored in AsyncStorage with key `kukulink_auth_token`; user data in `kukulink_user`
 
-**Navigation Structure**:
-- [frontend/app/_layout.tsx](frontend/app/_layout.tsx) - Root layout with AuthProvider wrapper + navigation guard
-- [frontend/app/(auth)/](frontend/app/(auth)/) - Welcome, Sign In, Sign Up screens (shows if not logged in)
-- [frontend/app/(tabs)/](frontend/app/(tabs)/) - Main app for buyers
-- [frontend/app/(supplier-tabs)/](frontend/app/(supplier-tabs)/) - Main app for suppliers (auto-redirects based on user.role)
+**Frontend Navigation Structure**:
+- frontend/app/_layout.tsx - Root layout with AuthProvider + conditional stack-based navigation
+- frontend/app/(auth)/ - Welcome, Sign In, Sign Up screens (shown if not logged in)
+- frontend/app/(tabs)/ - Main buyer app (Home, Notifications, Profile)
+- frontend/app/(screens)/ - Additional screens (Cart, Checkout, Order, etc.)
+- frontend/app/(supplier-tabs)/ - Main supplier app (auto-redirected if user.role === "supplier")
 
 **Authentication System**:
-- [frontend/context/AuthContext.tsx](frontend/context/AuthContext.tsx) - Global auth state + methods (signup, login, logout)
-- [frontend/services/api.ts](frontend/services/api.ts) - Centralized API calls with JWT header injection
-- [frontend/app/(auth)/sign-up.tsx](frontend/app/(auth)/sign-up.tsx) - Form validation + signup call
-- [frontend/app/(auth)/sign-in.tsx](frontend/app/(auth)/sign-in.tsx) - Form validation + login call
+- frontend/context/AuthContext.tsx - Manages global auth state (user, token, isLoggedIn, isLoading) + signup/login/logout methods
+- frontend/services/api.ts - Centralized API layer with auto-JWT-header injection for all requests
+- frontend/app/(auth)/sign-up.tsx - Form with validation (name, email, password confirm, role selection)
+- frontend/app/(auth)/sign-in.tsx - Form with email/password validation
 
-**How Auth Works**:
-1. App starts → checks AsyncStorage for saved token
-2. If token exists → restore user session (app shows main screens)
-3. If no token → show auth screens
-4. User fills signup/login form → API service sends to backend
-5. Backend returns JWT token → stored in AsyncStorage
-6. Root layout re-renders → automatically redirects to (tabs) or (supplier-tabs)
-7. All subsequent API calls auto-include token in header
+**Auth Flow Detail**:
+1. App mounts → AuthProvider reads AsyncStorage for saved token/user
+2. If valid token found → set isLoggedIn=true, restore session
+3. Root layout checks isLoggedIn and routes to (auth), (tabs), or (supplier-tabs)
+4. User submits signup/login → api.signup/api.login called → JWT token returned
+5. Token + user saved to AsyncStorage → isLoggedIn becomes true → automatic navigation
 
 ## Development Workflows
 
@@ -145,13 +156,13 @@ npm run lint
 5. **Prisma Queries**: All database access through PrismaClient (see [backend/index.js](backend/index.js) for examples)
 
 ### Frontend Patterns
-1. **API Service**: [frontend/services/api.ts](frontend/services/api.ts) has all backend calls (signup, login, getProducts)
-2. **Auth Context**: [frontend/context/AuthContext.tsx](frontend/context/AuthContext.tsx) manages `user`, `token`, `isLoggedIn`, `isLoading`
-3. **useAuth Hook**: Used in screens to access auth state: `const { user, login, logout } = useAuth()`
-4. **AsyncStorage**: Token stored with key `kukulink_auth_token`, user with `kukulink_user`
-5. **Loading States**: Screens show `ActivityIndicator` while `isLoading` is true, buttons disabled
-6. **Error Handling**: Errors shown in red alert boxes; use `clearError()` to dismiss
-7. **Navigation Guard**: Root layout conditionally renders auth screens vs app screens based on `isLoggedIn`
+1. **API Service**: frontend/services/api.ts has centralized API calls; provides signup, login, getProducts functions
+2. **Auth Context**: frontend/context/AuthContext.tsx manages user, token, isLoggedIn, isLoading state
+3. **useAuth Hook**: Used in all protected screens to access auth state and methods: `const { user, login, logout, error } = useAuth()`
+4. **AsyncStorage Keys**: Token: `kukulink_auth_token`, User: `kukulink_user` (JSON serialized)
+5. **Loading States**: Screens show ActivityIndicator while `isLoading` is true; disable buttons during API calls
+6. **Error Handling**: Errors shown in alert boxes; use `clearError()` to dismiss; API errors bubble up with `.message` property
+7. **Navigation Guard**: Root layout (_layout.tsx) uses Stack navigation with conditional route rendering based on isLoggedIn + user.role
 
 ### Cross-project Conventions
 1. **Email validation**: Frontend trims and lowercases emails before sending
@@ -163,13 +174,14 @@ npm run lint
 ## Integration Points
 
 ### Frontend ↔ Backend Communication
-- **Base URL**: `http://localhost:5000` (hardcoded in [frontend/services/api.ts](frontend/services/api.ts))
-- **Token Format**: `Authorization: Bearer <JWT_TOKEN>`
-- **Endpoint Contract**:
-  - POST `/api/auth/signup` sends `{name, email, password, role}`; returns `{token, user, message}`
-  - POST `/api/auth/login` sends `{email, password}`; returns `{token, user, message}`
-  - GET `/api/chicks` with Bearer token; returns array of products with supplier details
-  - GET `/api/seed` populates 4 default products + creates default supplier if needed
+- **Base URL**: `http://172.0.0.1:5000` (currently set in frontend/services/api.ts; was `http://172.20.10.6:5000`)
+- **Token Format**: `Authorization: Bearer <JWT_TOKEN>` header added automatically by api.ts helper
+- **Endpoint Contracts**:
+  - POST `/api/auth/signup` sends `{name, email, password, role}` → returns `{message, token, user}`
+  - POST `/api/auth/login` sends `{email, password}` → returns `{message, token, user}`
+  - GET `/api/chicks` (requires Bearer token) → returns array of `{id, name, price, supplierId, supplier: {id, name, email}, createdAt, updatedAt}`
+  - GET `/api/seed` → seeds 4 default products + creates default supplier if needed
+- **Error Responses**: All errors return JSON with `{message: string, error?: string}` and appropriate HTTP status (400, 401, 409, 500)
 
 ### External Dependencies
 - **Prisma** (^5.22.0): ORM for PostgreSQL
@@ -287,49 +299,54 @@ npx prisma studio
 | Purpose | File(s) |
 |---------|---------|
 | **Database Setup** | |
-| Schema definition | [backend/prisma/schema.prisma](backend/prisma/schema.prisma) |
-| Migrations | [backend/prisma/migrations/](backend/prisma/migrations/) |
-| **Backend Auth** | |
-| Main server + endpoints | [backend/index.js](backend/index.js) |
-| Config + secrets | [backend/.env](backend/.env) |
-| Dependencies | [backend/package.json](backend/package.json) |
+| Schema definition | backend/prisma/schema.prisma |
+| Migrations | backend/prisma/migrations/ |
+| **Backend API** | |
+| Main server + routes + middleware | backend/index.js |
+| Config + secrets | backend/.env (DATABASE_URL, JWT_SECRET, JWT_EXPIRY) |
+| Dependencies | backend/package.json |
 | **Frontend Auth** | |
-| API service layer | [frontend/services/api.ts](frontend/services/api.ts) |
-| Auth context + hooks | [frontend/context/AuthContext.tsx](frontend/context/AuthContext.tsx) |
-| Root layout + guard | [frontend/app/_layout.tsx](frontend/app/_layout.tsx) |
-| Sign up screen | [frontend/app/(auth)/sign-up.tsx](frontend/app/(auth)/sign-up.tsx) |
-| Sign in screen | [frontend/app/(auth)/sign-in.tsx](frontend/app/(auth)/sign-in.tsx) |
-| Welcome screen | [frontend/app/(auth)/index.tsx](frontend/app/(auth)/index.tsx) |
+| API service (signup, login, getProducts) | frontend/services/api.ts |
+| Auth context + useAuth hook | frontend/context/AuthContext.tsx |
+| Root layout + navigation guard | frontend/app/_layout.tsx |
+| Sign up screen | frontend/app/(auth)/sign-up.tsx |
+| Sign in screen | frontend/app/(auth)/sign-in.tsx |
+| Welcome screen | frontend/app/(auth)/index.tsx |
 | **Frontend App** | |
-| Buyer home | [frontend/app/(tabs)/index.tsx](frontend/app/(tabs)/index.tsx) |
-| Supplier home | [frontend/app/(supplier-tabs)/index.tsx](frontend/app/(supplier-tabs)/index.tsx) |
-| User profile | [frontend/app/(tabs)/profile.tsx](frontend/app/(tabs)/profile.tsx) |
+| Buyer home (tabs) | frontend/app/(tabs)/index.tsx |
+| Buyer notifications | frontend/app/(tabs)/notifications.tsx |
+| Buyer profile | frontend/app/(tabs)/profile.tsx |
+| Supplier home | frontend/app/(supplier-tabs)/index.tsx |
+| Cart, Checkout, Order screens | frontend/app/(screens)/ |
 
 ## Common Development Tasks
 
-### Add a New API Endpoint
-1. Add route to [backend/index.js](backend/index.js) with proper error handling
-2. Add JWT middleware if endpoint needs authentication
-3. Export function in [frontend/services/api.ts](frontend/services/api.ts)
-4. Call from component using: `const data = await api.newFunction()`
+### Add a New Backend API Endpoint
+1. Create route handler in backend/index.js (add after existing endpoint comments)
+2. Use `authenticateToken` middleware if endpoint requires auth: `app.get('/api/route', authenticateToken, async (req, res) => {...})`
+3. Access authenticated user via `req.user.id`, `req.user.email`, `req.user.role`
+4. Always return JSON: `res.json({data})` or `res.status(code).json({message, error})`
+5. Export corresponding function in frontend/services/api.ts
+6. Use in component: `await api.functionName(params, token)` or just `api.functionName(params)` if token auto-injected
 
-### Modify Prisma Schema
-1. Edit [backend/prisma/schema.prisma](backend/prisma/schema.prisma)
+### Add a New Prisma Model
+1. Edit backend/prisma/schema.prisma, define model with relationships
 2. Run: `npx prisma migrate dev --name describe_change`
-3. Confirms changes, generates migration file
-4. Prisma client auto-regenerated
+3. Prisma client auto-regenerates; restart backend server
+4. Seed new model in `/api/seed` endpoint if needed for testing
 
-### Debug Token Issues
-- Check browser DevTools → AsyncStorage (if available)
-- Check backend `.env` for `JWT_SECRET` and `JWT_EXPIRY`
-- Check token expiry: decode JWT at [jwt.io](https://jwt.io)
-- Use `npx prisma studio` to inspect User records
+### Debug Authentication Issues
+- Check `JWT_SECRET` and `JWT_EXPIRY` in backend/.env match expected values
+- Verify AsyncStorage content: use DevTools if debugging web, or: `const token = await AsyncStorage.getItem('kukulink_auth_token')`
+- Decode token at jwt.io to check expiry and payload
+- Check backend logs: `console.log` statements show login flow progress
+- Verify token format in network requests: `Authorization: Bearer <token>` (no extra spaces)
 
-### Change Authentication Rules
-- **Password requirements**: Edit validation in [frontend/app/(auth)/sign-up.tsx](frontend/app/(auth)/sign-up.tsx) and [backend/index.js](backend/index.js)
-- **Token expiry**: Change `JWT_EXPIRY` in [backend/.env](backend/.env)
-- **Required fields**: Add validation to signup endpoint in [backend/index.js](backend/index.js)
-- **Role types**: Update schema in [backend/prisma/schema.prisma](backend/prisma/schema.prisma) and types in [frontend/services/api.ts](frontend/services/api.ts)
+### Modify Authentication Rules
+- **Password validation**: Edit frontend/app/(auth)/sign-up.tsx validation + backend/index.js regex checks
+- **Token expiry**: Change `JWT_EXPIRY` in backend/.env (format: "7d", "24h", etc.)
+- **Required signup fields**: Add validation to backend/index.js signup endpoint
+- **Role types**: Update User.role default in backend/prisma/schema.prisma + SignupPayload role type in frontend/services/api.ts
 
 ## Next Steps After Authentication is Working
 1. **Add logout button** to profile screen that calls `useAuth().logout()`
